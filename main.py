@@ -492,7 +492,7 @@ def extract_dominant_colors(original_bgr: np.ndarray,
 # ---------- Main script: parsing + color attributes + wardrobe extraction ----------
 
 parser = FashnHumanParser()
-image_path = "./Images/women_pants_2.jpg"
+image_path = "./Images/women_pants_1.jpg"
 
 original_bgr = cv2.imread(image_path)
 if original_bgr is None:
@@ -623,24 +623,16 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
 
 base_name = os.path.splitext(os.path.basename(image_path))[0]
 
-# Top‑related labels (e.g. 'upper-clothes', 'top') [web:55]
+# Top-related labels: top, dress, scarf
 top_class_ids = []
 for cid, label in IDS_TO_LABELS.items():
-    label_l = label.lower()
-    if "upper" in label_l or "top" in label_l:
+    if label in {"top", "dress", "scarf"}:
         top_class_ids.append(cid)
 
-# Pants‑related labels (e.g. 'lower-clothes', 'pants', 'trousers', 'jeans', 'shorts') [web:55]
+# Pants-related labels: pants, skirt, belt
 pants_class_ids = []
 for cid, label in IDS_TO_LABELS.items():
-    label_l = label.lower()
-    if (
-        "lower" in label_l
-        or "pants" in label_l
-        or "trousers" in label_l
-        or "jeans" in label_l
-        or "shorts" in label_l
-    ):
+    if label in {"pants", "skirt", "belt"}:
         pants_class_ids.append(cid)
 
 wardrobe_root = "./wardrobe"
@@ -651,64 +643,6 @@ save_items(mask_2d, top_class_ids, original_bgr, tops_dir, base_name,
            min_area=500, prefix="top")
 save_items(mask_2d, pants_class_ids, original_bgr, pants_dir, base_name,
            min_area=500, prefix="pants")
-
-# ---------- Wardrobe extraction: isolate tops and save to ./wardrobe ----------
-
-wardrobe_dir = "./wardrobe"
-os.makedirs(wardrobe_dir, exist_ok=True)
-
-# Find which class IDs correspond to tops, pants (e.g., "upper-clothes")
-top_class_ids = []
-for cid, label in IDS_TO_LABELS.items():
-    if "upper" in label.lower() or "top" in label.lower() or "pants" in label.lower():
-        top_class_ids.append(cid)
-
-print("Top-related class IDs:", top_class_ids)
-
-if top_class_ids:
-    # Combined mask for all top classes
-    top_mask = np.zeros_like(mask_2d, dtype=np.uint8)
-    for cid in top_class_ids:
-        top_mask[mask_2d == cid] = 1
-
-    if np.any(top_mask):
-        num_labels, labels_cc, stats, centroids = cv2.connectedComponentsWithStats(
-            top_mask, connectivity=8
-        )
-
-        base_name = os.path.splitext(os.path.basename(image_path))[0]
-        saved_count = 0
-
-        # label 0 is background
-        for label_id in range(1, num_labels):
-            x, y, w_box, h_box, area = stats[label_id]
-
-            # Ignore very small regions (noise)
-            if area < 500:
-                continue
-
-            crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
-
-            # Local mask for this connected component
-            component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
-
-            # Apply mask to crop (keep only top pixels)
-            crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
-
-            saved_count += 1
-            out_path = os.path.join(
-                wardrobe_dir,
-                f"{base_name}_top_{saved_count}.png"
-            )
-            cv2.imwrite(out_path, crop_bgr_masked)
-
-        # print(f"Saved {saved_count} top(s) to {wardrobe_dir}")
-        print(f"Saved {saved_count} clothing(s) to Wardrobe!")
-    else:
-        print("No top pixels found in this image.")
-else:
-    print("No labels containing 'upper' or 'top' in IDS_TO_LABELS; wardrobe extraction skipped.")
-
 
 # ---------- Display overlay ----------
 
@@ -724,4 +658,3 @@ cv2.waitKey(0)
 cv2.destroyAllWindows()
 
 # add percentage checks - top identified percentage of torso - if less than threshold, dont save since it will be a small cut out of the whole top
-# setup github repo
