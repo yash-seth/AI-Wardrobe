@@ -367,74 +367,144 @@ import cv2
 import numpy as np
 from sklearn.cluster import KMeans
 from fashn_human_parser import FashnHumanParser, IDS_TO_LABELS
+from colormath.color_objects import sRGBColor, LabColor
+from colormath.color_conversions import convert_color
+from colormath.color_diff import delta_e_cie2000
+
+if not hasattr(np, "asscalar"):
+    def _asscalar(a):
+        # a is a 0-dim numpy array; .item() returns the Python scalar
+        return a.item()
+    np.asscalar = _asscalar  # type: ignore
 
 
 # ---------- Color palette and helpers ----------
+PALETTE_HEX = {
+    # neutrals
+    "black":        "#000000",
+    "charcoal":     "#36454F",  # dark gray-blue
+    "dark gray":    "#4F4F4F",
+    "gray":         "#808080",
+    "light gray":   "#D3D3D3",
+    "off-white":    "#F5F5F0",  # slightly warm white
+    "white":        "#FFFFFF",
 
-NAMED_COLORS = {
-    "black":   np.array([0,   0,   0]),
-    "white":   np.array([255, 0,   0]),
-    "gray":    np.array([128, 0,   0]),
-    "red":     np.array([136, 208, 195]),
-    "orange":  np.array([191, 190, 120]),
-    "yellow":  np.array([220,  20, 200]),
-    "green":   np.array([182,  84, 182]),
-    "blue":    np.array([136, 208,  20]),
-    "navy":    np.array([80,   20,  20]),
-    "purple":  np.array([108, 200,  20]),
-    "pink":    np.array([200, 180, 140]),
-    "brown":   np.array([100, 140, 150]),
-    "beige":   np.array([220, 110, 130]),
+    # blues / greens
+    "navy":         "#1A2340",
+    "blue":         "#1E88E5",
+    "light blue":   "#90CAF9",
+    "teal":         "#00897B",
+    "green":        "#43A047",
+    "olive":        "#556B2F",
+
+    # beiges / browns / khakis
+    "beige":        "#F5DEB3",
+    "tan":          "#D2B48C",
+    "khaki":        "#C3B091",  # classic khaki trouser color
+    "camel":        "#C19A6B",
+    "brown":        "#8B4513",
+
+    # yellows / oranges / reds
+    "yellow":       "#FFEB3B",
+    "mustard":      "#D4AF37",
+    "orange":       "#FB8C00",
+    "rust":         "#B7410E",
+    "red":          "#E53935",
+    "burgundy":     "#800020",
+
+    # pinks / purples
+    "dusty pink":   "#D8A7B1",  # muted pink often in fashion datasets
+    "pink":         "#EC407A",
+    "mauve":        "#AF8DA5",
+    "purple":       "#8E24AA",
 }
+
+def hex_to_lab_color(hex_str: str) -> LabColor:
+    """Convert hex string (#RRGGBB) to colormath LabColor."""
+    h = hex_str.lstrip("#")
+    r = int(h[0:2], 16)
+    g = int(h[2:4], 16)
+    b = int(h[4:6], 16)
+    rgb = sRGBColor(r, g, b, is_upscaled=True)
+    return convert_color(rgb, LabColor)
+
+PALETTE_LAB = {name: hex_to_lab_color(hx) for name, hx in PALETTE_HEX.items()}
+
+def opencv_lab_to_colormath_lab(lab_center: np.ndarray) -> LabColor:
+    """
+    OpenCV LAB → colormath LabColor.
+
+    OpenCV: L in [0,255], a,b in [0,255] with 128 offset.
+    Colormath: L* in [0,100], a*,b* ~ [-128,127].
+    """
+    L_cv, a_cv, b_cv = lab_center
+    L_star = (L_cv / 255.0) * 100.0
+    a_star = a_cv - 128.0
+    b_star = b_cv - 128.0
+    return LabColor(lab_l=L_star, lab_a=a_star, lab_b=b_star)
 
 
 def classify_color_from_lab(lab_center: np.ndarray) -> str:
     """
-    lab_center: np.array([L, a, b]) cluster center in LAB
-    Returns a human-readable color name.
+    Robust color naming with explicit handling of neutrals (black/charcoal/gray/off-white),
+    then ΔE2000 to a fashion palette for chromatic colors.
     """
-    # Convert single LAB color back to BGR
-    lab_img = lab_center.reshape(1, 1, 3).astype(np.uint8)
-    bgr_img = cv2.cvtColor(lab_img, cv2.COLOR_Lab2BGR)
-    hsv_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
+    L_cv, a_cv, b_cv = lab_center
 
-    H, S, V = hsv_img[0, 0]  # Hue (0–179), Sat (0–255), Val (0–255)
+    # Compute approximate chroma in OpenCV Lab space
+    a_off = a_cv - 128.0
+    b_off = b_cv - 128.0
+    chroma_cv = np.sqrt(a_off * a_off + b_off * b_off)
 
-    # ----- Basic brightness/saturation rules: black / white / gray -----
-    if V < 40:               # very dark
-        return "black"
-    if V > 220 and S < 40:   # very bright, almost no color
-        return "white"
-    if S < 40:               # low saturation mid/high value
-        return "gray"
+    # Convert to CIE Lab scale for better-lightness reasoning
+    L_star = (L_cv / 255.0) * 100.0
 
-    # ----- Brown vs orange split (same hue band, different V) -----
-    # Brown in HSV typically has H ~ 10–20, high S, mid V
-    if 10 <= H < 25 and S > 80:
-        if V < 140:          # darker → brown
-            return "brown"
-        else:                # brighter → orange/tan
-            return "orange"
+    # ----- Neutral handling: black / charcoal / grays / off-white -----
+    # Very low chroma: treat as neutral (no strong hue)
+    if chroma_cv < 10:
+        # Very dark neutral: black
+        if L_star < 18:
+            return "black"
+        # Dark neutral: charcoal
+        if 18 <= L_star < 35:
+            return "charcoal"
+        # Mid-dark neutral: dark gray
+        if 35 <= L_star < 55:
+            return "dark gray"
+        # Mid-light neutral: gray
+        if 55 <= L_star < 72:
+            return "gray"
+        # Light neutral: light gray / off-white
+        if 72 <= L_star < 88:
+            return "light gray"
+        # Very light neutral: off-white
+        if L_star >= 88:
+            return "off-white"
 
-    # ----- Hue-based ranges for other saturated colors -----
-    if (H < 10) or (H >= 170):
-        return "red"
-    elif 25 <= H < 40:
-        return "yellow"
-    elif 40 <= H < 80:
-        return "green"
-    elif 80 <= H < 130:
-        return "blue"
-    elif 130 <= H < 155:
-        return "purple"
-    elif 155 <= H < 170:
-        return "pink"
+    # Slightly more chroma but still near-neutral: merge into gray scale
+    if chroma_cv < 16:
+        if L_star < 20:
+            return "black"
+        if 20 <= L_star < 40:
+            return "charcoal"
+        if 40 <= L_star < 65:
+            return "gray"
+        if 65 <= L_star < 85:
+            return "light gray"
+        return "off-white"
 
-    # For remaining hues near orange/yellow but with mid V, treat as beige/brown
-    if V >= 140:
-        return "beige"
-    else:
-        return "brown"
+    # ----- Chromatic colors: use ΔE2000 to fashion palette -----
+    color_lab = opencv_lab_to_colormath_lab(lab_center)
+
+    best_name = None
+    best_de = float("inf")
+    for name, pal_lab in PALETTE_LAB.items():
+        de = delta_e_cie2000(color_lab, pal_lab)
+        if de < best_de:
+            best_de = de
+            best_name = name
+
+    return best_name
 
 
 def extract_dominant_colors(original_bgr: np.ndarray,
@@ -465,7 +535,8 @@ def extract_dominant_colors(original_bgr: np.ndarray,
         return []
 
     # Decide number of clusters
-    n_clusters = min(max_clusters, max(1, len(garment_pixels_lab) // 500))
+    # n_clusters = min(max_clusters, max(1, len(garment_pixels_lab) // 500))
+    n_clusters = min(max_clusters, max(1, len(garment_pixels_lab) // 1000))
 
     kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init=10)
     labels = kmeans.fit_predict(garment_pixels_lab)
@@ -492,7 +563,7 @@ def extract_dominant_colors(original_bgr: np.ndarray,
 # ---------- Main script: parsing + color attributes + wardrobe extraction ----------
 
 parser = FashnHumanParser()
-image_path = "./Images/women_pants_1.jpg"
+image_path = "./Images/women_pants_2.jpg"
 
 original_bgr = cv2.imread(image_path)
 if original_bgr is None:
@@ -520,10 +591,14 @@ overlay_result = cv2.addWeighted(original_bgr, alpha, colored_mask, beta, 0)
 
 attributes_per_piece = []
 
+CLOTHING_LABELS = {
+    "top", "dress", "skirt", "pants", "belt",
+    "scarf", "bag", "hat", "feet"  # feet covers shoes
+}
+
 # Loop over all possible class IDs (1..17)
 for class_id in range(1, 18):
     class_mask = (mask_2d == class_id).astype(np.uint8)
-
     if not np.any(class_mask):
         continue
 
@@ -536,7 +611,13 @@ for class_id in range(1, 18):
 
     label_text = IDS_TO_LABELS.get(class_id, f"ID {class_id}")
 
-    # --- color extraction for this piece ---
+    # Skip color attributes for non-clothing regions (skin, torso, etc.)
+    if label_text not in CLOTHING_LABELS:
+        color_label = label_text
+        # draw text as before...
+        continue
+
+    # --- color extraction only for clothing pieces ---
     color_info = extract_dominant_colors(original_bgr, class_mask, max_clusters=3)
 
     if color_info:
