@@ -1,17 +1,60 @@
 import os
 import cv2
+import argparse
 import numpy as np
 from sklearn.cluster import KMeans
-from fashn_human_parser import FashnHumanParser, IDS_TO_LABELS
-from colormath.color_objects import sRGBColor, LabColor
-from colormath.color_conversions import convert_color
-from colormath.color_diff import delta_e_cie2000
 
+# ---- Patch np.asscalar for colormath + modern NumPy ----
 if not hasattr(np, "asscalar"):
     def _asscalar(a):
         # a is a 0-dim numpy array; .item() returns the Python scalar
         return a.item()
     np.asscalar = _asscalar  # type: ignore
+
+
+from fashn_human_parser import FashnHumanParser, IDS_TO_LABELS
+from colormath.color_objects import sRGBColor, LabColor
+from colormath.color_conversions import convert_color
+from colormath.color_diff import delta_e_cie2000
+
+
+# set the image path here
+image_path = "./Images/image1-white polo.jpg"
+
+# ---- CLI flags: what to save from the image ----
+parser = argparse.ArgumentParser(description="AI Wardrobe extractor")
+
+# Tops flags: --save-tops / --no-save-tops
+parser.add_argument(
+    "--save-tops",
+    dest="save_tops",
+    action="store_true",
+    help="Save top garments into wardrobe/tops",
+)
+parser.add_argument(
+    "--no-save-tops",
+    dest="save_tops",
+    action="store_false",
+    help="Do NOT save top garments",
+)
+parser.set_defaults(save_tops=True)  # default: save tops
+
+# Pants flags: --save-pants / --no-save-pants
+parser.add_argument(
+    "--save-pants",
+    dest="save_pants",
+    action="store_true",
+    help="Save bottom garments into wardrobe/pants",
+)
+parser.add_argument(
+    "--no-save-pants",
+    dest="save_pants",
+    action="store_false",
+    help="Do NOT save bottom garments",
+)
+parser.set_defaults(save_pants=True)  # default: save pants
+
+args = parser.parse_args()
 
 
 # ---------- Color palette and helpers ----------
@@ -199,7 +242,7 @@ def extract_dominant_colors(original_bgr: np.ndarray,
 # ---------- Main script: parsing + color attributes + wardrobe extraction ----------
 
 parser = FashnHumanParser()
-image_path = "./Images/women_pants_2.jpg"
+# image_path = "./Images/women_pants_2.jpg"
 
 original_bgr = cv2.imread(image_path)
 if original_bgr is None:
@@ -299,13 +342,54 @@ for piece in attributes_per_piece:
 
 # ---------- Wardrobe extraction: isolate tops and pants ----------
 
+# def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
+#                min_area=500, prefix="item"):
+#     os.makedirs(out_dir, exist_ok=True)
+
+#     if not class_ids:
+#         print(f"No matching class IDs found for {prefix} in IDS_TO_LABELS.")
+#         return 0
+
+#     combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
+#     for cid in class_ids:
+#         combined_mask[mask_2d == cid] = 1
+
+#     if not np.any(combined_mask):
+#         print(f"No pixels found for {prefix} in this image.")
+#         return 0
+
+#     num_labels, labels_cc, stats, centroids = cv2.connectedComponentsWithStats(
+#         combined_mask, connectivity=8
+#     )
+
+#     saved_count = 0
+#     for label_id in range(1, num_labels):  # 0 is background
+#         x, y, w_box, h_box, area = stats[label_id]
+#         if area < min_area:
+#             continue
+
+#         crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
+#         component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
+
+#         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
+
+#         saved_count += 1
+#         out_path = os.path.join(out_dir, f"{base_name}_{prefix}_{saved_count}.png")
+#         cv2.imwrite(out_path, crop_bgr_masked)
+
+#     print(f"Saved {saved_count} {prefix}(s) to {out_dir}")
+#     return saved_count
+
 def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
-               min_area=500, prefix="item"):
+               min_area=500, min_area_fraction=0.05,
+               prefix="item"):
     os.makedirs(out_dir, exist_ok=True)
 
     if not class_ids:
         print(f"No matching class IDs found for {prefix} in IDS_TO_LABELS.")
         return 0
+
+    H, W = mask_2d.shape[:2]
 
     combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
     for cid in class_ids:
@@ -319,15 +403,29 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         combined_mask, connectivity=8
     )
 
+    total_pixels = combined_mask.sum()
     saved_count = 0
+
     for label_id in range(1, num_labels):  # 0 is background
         x, y, w_box, h_box, area = stats[label_id]
         if area < min_area:
             continue
 
+        area_fraction = area / float(total_pixels)
+        if area_fraction < min_area_fraction:
+            continue
+
+        touches_top = (y == 0)
+        touches_bottom = (y + h_box >= H)
+        touches_left = (x == 0)
+        touches_right = (x + w_box >= W)
+
+        if prefix == "top" and touches_top and not touches_bottom:
+            # likely a half-visible top cut by image border
+            continue
+
         crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
         component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
-
         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
 
         saved_count += 1
@@ -356,10 +454,18 @@ wardrobe_root = "./wardrobe"
 tops_dir = os.path.join(wardrobe_root, "tops")
 pants_dir = os.path.join(wardrobe_root, "pants")
 
-save_items(mask_2d, top_class_ids, original_bgr, tops_dir, base_name,
-           min_area=500, prefix="top")
-save_items(mask_2d, pants_class_ids, original_bgr, pants_dir, base_name,
-           min_area=500, prefix="pants")
+# save_items(mask_2d, top_class_ids, original_bgr, tops_dir, base_name,
+#            min_area=500, prefix="top")
+# save_items(mask_2d, pants_class_ids, original_bgr, pants_dir, base_name,
+#            min_area=500, prefix="pants")
+
+if args.save_tops:
+    save_items(mask_2d, top_class_ids, original_bgr, tops_dir, base_name,
+               min_area=500, min_area_fraction=0.05, prefix="top")
+
+if args.save_pants:
+    save_items(mask_2d, pants_class_ids, original_bgr, pants_dir, base_name,
+               min_area=500, min_area_fraction=0.05, prefix="pants")
 
 # ---------- Display overlay ----------
 
@@ -374,4 +480,10 @@ cv2.imwrite(out_path, overlay_result)            # writes into labelled_images/ 
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
-# add percentage checks - top identified percentage of torso - if less than threshold, dont save since it will be a small cut out of the whole top
+# CLI flags to control detection
+
+# python main.py → saves tops and pants.
+
+# python main.py --no-save-tops → pants only.
+
+# python main.py --no-save-pants → tops only.
