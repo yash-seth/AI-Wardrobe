@@ -372,6 +372,10 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
                piece_attributes,
                min_area=500, min_area_fraction=0.05,
                prefix="item"):
+    
+    # Tune these if needed
+    MIN_TOP_AREA_FRACTION_IMAGE = 0.05   # 5% of full image area
+    MIN_TOP_AREA_FRACTION_MASK  = 0.30   # 30% of all top pixels in this image
     os.makedirs(out_dir, exist_ok=True)
 
     if not class_ids:
@@ -400,19 +404,35 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         if area < min_area:
             continue
 
-        area_fraction = area / float(total_pixels)
-        if area_fraction < min_area_fraction:
-            continue
+        # Fraction of combined garment mask (all top pixels or all pants pixels)
+        area_fraction_mask = area / float(total_pixels)
+
+        # Fraction of the whole image area
+        area_fraction_image = area / float(H * W)
 
         touches_top = (y == 0)
         touches_bottom = (y + h_box >= H)
         touches_left = (x == 0)
         touches_right = (x + w_box >= W)
 
-        if prefix == "top" and touches_top and not touches_bottom:
-            continue
+        if prefix == "top":
+            # 1) Discard top fragments that are too small relative to full image
+            if area_fraction_image < MIN_TOP_AREA_FRACTION_IMAGE:
+                continue
 
-        valid_components.append((label_id, x, y, w_box, h_box, area))
+            # 2) Discard tiny fragments of the top mask itself
+            if area_fraction_mask < MIN_TOP_AREA_FRACTION_MASK:
+                continue
+
+            # 3) (Optional, keep if you like) skip tops clearly chopped by the top edge
+            if touches_top and not touches_bottom:
+                continue
+        else:
+            # For pants or other garments, keep your existing mask-based threshold
+            if area_fraction_mask < min_area_fraction:
+                continue
+
+    valid_components.append((label_id, x, y, w_box, h_box, area))
 
     if not valid_components:
         print(f"No sufficiently large {prefix} components to save.")
