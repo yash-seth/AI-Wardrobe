@@ -1,4 +1,5 @@
 import os
+import json
 import cv2
 import argparse
 import numpy as np
@@ -19,7 +20,7 @@ from colormath.color_diff import delta_e_cie2000
 
 
 # set the image path here
-image_path = "./Images/image1-white polo.jpg"
+image_path = "./Images/cargo-shorts-1-man.jpg"
 
 # ---- CLI flags: what to save from the image ----
 parser = argparse.ArgumentParser(description="AI Wardrobe extractor")
@@ -342,62 +343,33 @@ for piece in attributes_per_piece:
 
 # ---------- Wardrobe extraction: isolate tops and pants ----------
 
-# def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
-#                min_area=500, min_area_fraction=0.05,
-#                prefix="item"):
-#     os.makedirs(out_dir, exist_ok=True)
+def append_metadata(metadata_path: str, record: dict) -> None:
+    """
+    Upsert one garment metadata record into metadata.json.
+    If a record with the same filename already exists, override it.
+    """
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = []
+    else:
+        data = []
 
-#     if not class_ids:
-#         print(f"No matching class IDs found for {prefix} in IDS_TO_LABELS.")
-#         return 0
+    # Use filename as the unique key; you can also use (source_image, kind) if you prefer
+    new_filename = record.get("filename")
 
-#     H, W = mask_2d.shape[:2]
+    # Keep all records whose filename differs, then append the new one
+    data = [r for r in data if r.get("filename") != new_filename]
+    data.append(record)
 
-#     combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
-#     for cid in class_ids:
-#         combined_mask[mask_2d == cid] = 1
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
-#     if not np.any(combined_mask):
-#         print(f"No pixels found for {prefix} in this image.")
-#         return 0
-
-#     num_labels, labels_cc, stats, centroids = cv2.connectedComponentsWithStats(
-#         combined_mask, connectivity=8
-#     )
-
-#     total_pixels = combined_mask.sum()
-#     saved_count = 0
-
-#     for label_id in range(1, num_labels):  # 0 is background
-#         x, y, w_box, h_box, area = stats[label_id]
-#         if area < min_area:
-#             continue
-
-#         area_fraction = area / float(total_pixels)
-#         if area_fraction < min_area_fraction:
-#             continue
-
-#         touches_top = (y == 0)
-#         touches_bottom = (y + h_box >= H)
-#         touches_left = (x == 0)
-#         touches_right = (x + w_box >= W)
-
-#         if prefix == "top" and touches_top and not touches_bottom:
-#             # likely a half-visible top cut by image border
-#             continue
-
-#         crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
-#         component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
-#         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
-
-#         saved_count += 1
-#         out_path = os.path.join(out_dir, f"{base_name}_{prefix}_{saved_count}.png")
-#         cv2.imwrite(out_path, crop_bgr_masked)
-
-#     print(f"Saved {saved_count} {prefix}(s) to {out_dir}")
-#     return saved_count
 
 def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
+               piece_attributes,
                min_area=500, min_area_fraction=0.05,
                prefix="item"):
     os.makedirs(out_dir, exist_ok=True)
@@ -408,7 +380,6 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
 
     H, W = mask_2d.shape[:2]
 
-    # Combined mask of all requested class_ids (e.g., all 'top' pixels)
     combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
     for cid in class_ids:
         combined_mask[mask_2d == cid] = 1
@@ -423,9 +394,7 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
 
     total_pixels = combined_mask.sum()
 
-    # First pass: collect all valid components (after area / fraction / border filters)
-    valid_components = []  # list of (label_id, x, y, w_box, h_box, area)
-
+    valid_components = []
     for label_id in range(1, num_labels):  # 0 is background
         x, y, w_box, h_box, area = stats[label_id]
         if area < min_area:
@@ -440,7 +409,6 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         touches_left = (x == 0)
         touches_right = (x + w_box >= W)
 
-        # For tops: skip components clearly chopped by the top image edge
         if prefix == "top" and touches_top and not touches_bottom:
             continue
 
@@ -450,11 +418,23 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         print(f"No sufficiently large {prefix} components to save.")
         return 0
 
+    # Determine color metadata for this garment type from attributes_per_piece
+    matching_attrs = [p for p in piece_attributes if p["class_id"] in class_ids]
+    if matching_attrs:
+        primary_color = matching_attrs[0]["primary_color"]
+        secondary_colors = matching_attrs[0]["secondary_colors"]
+    else:
+        primary_color = None
+        secondary_colors = []
+
+    # Metadata file at wardrobe root (parent of out_dir)
+    wardrobe_root = os.path.dirname(out_dir)  # "./wardrobe"
+    metadata_path = os.path.join(wardrobe_root, "metadata.json")
+
     saved_count = 0
 
-    # Special case for tops: if multiple valid components, merge into one union crop
-    if prefix == "top" and len(valid_components) > 1:
-        # Compute union bounding box across all valid top components
+    # Merge multiple top components into one, as per previous logic
+    if prefix in {"top", "pants"} and len(valid_components) > 1:
         xs = [x for (_, x, _, w_box, _, _) in valid_components]
         ys = [y for (_, _, y, _, h_box, _) in valid_components]
         x_maxs = [x + w_box for (_, x, _, w_box, _, _) in valid_components]
@@ -465,10 +445,8 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         x_max = max(x_maxs)
         y_max = max(y_maxs)
 
-        # Crop original image to union box
         crop_bgr = original_bgr[y_min:y_max, x_min:x_max]
 
-        # Build union mask in the union box
         union_mask = np.zeros((y_max - y_min, x_max - x_min), dtype=np.uint8)
         for (label_id, _, _, _, _, _) in valid_components:
             component_mask = (labels_cc[y_min:y_max, x_min:x_max] == label_id).astype(np.uint8)
@@ -477,20 +455,48 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=union_mask)
 
         saved_count = 1
-        out_path = os.path.join(out_dir, f"{base_name}_{prefix}_{saved_count}.png")
+        out_filename = f"{base_name}_{prefix}_{saved_count}.png"
+        out_path = os.path.join(out_dir, out_filename)
         cv2.imwrite(out_path, crop_bgr_masked)
+
+        # ---- write metadata record ----
+        record = {
+            "filename": out_filename,
+            "path": out_path,
+            "kind": prefix,
+            "source_image": image_path,
+            "class_ids": list(class_ids),
+            "labels": [IDS_TO_LABELS[cid] for cid in class_ids],
+            "primary_color": primary_color,
+            "secondary_colors": secondary_colors,
+        }
+        append_metadata(metadata_path, record)
+
         print(f"Saved merged {prefix} to {out_dir} (union of {len(valid_components)} parts)")
         return saved_count
 
-    # Default behavior (pants, or single top component): save each component separately
+    # Default behaviour: one record per component (pants, or single top)
     for (label_id, x, y, w_box, h_box, area) in valid_components:
         crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
         component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
 
         saved_count += 1
-        out_path = os.path.join(out_dir, f"{base_name}_{prefix}_{saved_count}.png")
+        out_filename = f"{base_name}_{prefix}_{saved_count}.png"
+        out_path = os.path.join(out_dir, out_filename)
         cv2.imwrite(out_path, crop_bgr_masked)
+
+        record = {
+            "filename": out_filename,
+            "path": out_path,
+            "kind": prefix,
+            "source_image": image_path,
+            "class_ids": list(class_ids),
+            "labels": [IDS_TO_LABELS[cid] for cid in class_ids],
+            "primary_color": primary_color,
+            "secondary_colors": secondary_colors,
+        }
+        append_metadata(metadata_path, record)
 
     print(f"Saved {saved_count} {prefix}(s) to {out_dir}")
     return saved_count
@@ -513,17 +519,14 @@ wardrobe_root = "./wardrobe"
 tops_dir = os.path.join(wardrobe_root, "tops")
 pants_dir = os.path.join(wardrobe_root, "pants")
 
-# save_items(mask_2d, top_class_ids, original_bgr, tops_dir, base_name,
-#            min_area=500, prefix="top")
-# save_items(mask_2d, pants_class_ids, original_bgr, pants_dir, base_name,
-#            min_area=500, prefix="pants")
-
 if args.save_tops:
     save_items(mask_2d, top_class_ids, original_bgr, tops_dir, base_name,
+               attributes_per_piece,
                min_area=500, min_area_fraction=0.05, prefix="top")
 
 if args.save_pants:
     save_items(mask_2d, pants_class_ids, original_bgr, pants_dir, base_name,
+               attributes_per_piece,
                min_area=500, min_area_fraction=0.05, prefix="pants")
 
 # ---------- Display overlay ----------
