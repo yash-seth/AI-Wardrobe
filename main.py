@@ -343,12 +343,15 @@ for piece in attributes_per_piece:
 # ---------- Wardrobe extraction: isolate tops and pants ----------
 
 # def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
-#                min_area=500, prefix="item"):
+#                min_area=500, min_area_fraction=0.05,
+#                prefix="item"):
 #     os.makedirs(out_dir, exist_ok=True)
 
 #     if not class_ids:
 #         print(f"No matching class IDs found for {prefix} in IDS_TO_LABELS.")
 #         return 0
+
+#     H, W = mask_2d.shape[:2]
 
 #     combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
 #     for cid in class_ids:
@@ -362,15 +365,29 @@ for piece in attributes_per_piece:
 #         combined_mask, connectivity=8
 #     )
 
+#     total_pixels = combined_mask.sum()
 #     saved_count = 0
+
 #     for label_id in range(1, num_labels):  # 0 is background
 #         x, y, w_box, h_box, area = stats[label_id]
 #         if area < min_area:
 #             continue
 
+#         area_fraction = area / float(total_pixels)
+#         if area_fraction < min_area_fraction:
+#             continue
+
+#         touches_top = (y == 0)
+#         touches_bottom = (y + h_box >= H)
+#         touches_left = (x == 0)
+#         touches_right = (x + w_box >= W)
+
+#         if prefix == "top" and touches_top and not touches_bottom:
+#             # likely a half-visible top cut by image border
+#             continue
+
 #         crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
 #         component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
-
 #         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
 
 #         saved_count += 1
@@ -391,6 +408,7 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
 
     H, W = mask_2d.shape[:2]
 
+    # Combined mask of all requested class_ids (e.g., all 'top' pixels)
     combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
     for cid in class_ids:
         combined_mask[mask_2d == cid] = 1
@@ -404,7 +422,9 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
     )
 
     total_pixels = combined_mask.sum()
-    saved_count = 0
+
+    # First pass: collect all valid components (after area / fraction / border filters)
+    valid_components = []  # list of (label_id, x, y, w_box, h_box, area)
 
     for label_id in range(1, num_labels):  # 0 is background
         x, y, w_box, h_box, area = stats[label_id]
@@ -420,10 +440,50 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
         touches_left = (x == 0)
         touches_right = (x + w_box >= W)
 
+        # For tops: skip components clearly chopped by the top image edge
         if prefix == "top" and touches_top and not touches_bottom:
-            # likely a half-visible top cut by image border
             continue
 
+        valid_components.append((label_id, x, y, w_box, h_box, area))
+
+    if not valid_components:
+        print(f"No sufficiently large {prefix} components to save.")
+        return 0
+
+    saved_count = 0
+
+    # Special case for tops: if multiple valid components, merge into one union crop
+    if prefix == "top" and len(valid_components) > 1:
+        # Compute union bounding box across all valid top components
+        xs = [x for (_, x, _, w_box, _, _) in valid_components]
+        ys = [y for (_, _, y, _, h_box, _) in valid_components]
+        x_maxs = [x + w_box for (_, x, _, w_box, _, _) in valid_components]
+        y_maxs = [y + h_box for (_, _, y, _, h_box, _) in valid_components]
+
+        x_min = min(xs)
+        y_min = min(ys)
+        x_max = max(x_maxs)
+        y_max = max(y_maxs)
+
+        # Crop original image to union box
+        crop_bgr = original_bgr[y_min:y_max, x_min:x_max]
+
+        # Build union mask in the union box
+        union_mask = np.zeros((y_max - y_min, x_max - x_min), dtype=np.uint8)
+        for (label_id, _, _, _, _, _) in valid_components:
+            component_mask = (labels_cc[y_min:y_max, x_min:x_max] == label_id).astype(np.uint8)
+            union_mask = np.maximum(union_mask, component_mask)
+
+        crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=union_mask)
+
+        saved_count = 1
+        out_path = os.path.join(out_dir, f"{base_name}_{prefix}_{saved_count}.png")
+        cv2.imwrite(out_path, crop_bgr_masked)
+        print(f"Saved merged {prefix} to {out_dir} (union of {len(valid_components)} parts)")
+        return saved_count
+
+    # Default behavior (pants, or single top component): save each component separately
+    for (label_id, x, y, w_box, h_box, area) in valid_components:
         crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
         component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
         crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
@@ -434,7 +494,6 @@ def save_items(mask_2d, class_ids, original_bgr, out_dir, base_name,
 
     print(f"Saved {saved_count} {prefix}(s) to {out_dir}")
     return saved_count
-
 
 base_name = os.path.splitext(os.path.basename(image_path))[0]
 
