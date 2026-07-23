@@ -2,3 +2,4 @@ env/
 Images/
 wardrobe/
 labelled_images/
+__pycache__/
