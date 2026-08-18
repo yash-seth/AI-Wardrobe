@@ -1,282 +1,336 @@
 # Fashion Wardrobe Parser
 
-This project uses the **FASHN Human Parser** to segment people in images into semantic regions (top, pants, dress, accessories, body parts, etc.), then derives **per-garment color attributes** and saves cropped garments (tops and pants) to a local “wardrobe”. It is intended as a foundation for personal wardrobe datasets, fashion search, or virtual try-on pre-processing.
+An AI-powered wardrobe extraction app built around the **FASHN Human Parser**. It segments people in fashion images into semantic regions, extracts per-garment color attributes, saves transparent garment cutouts, and presents the results through a FastAPI-powered web interface.
+
+Repository: [yash-seth/AI-Wardrobe](https://github.com/yash-seth/AI-Wardrobe)
+
+The project is intended as a foundation for personal wardrobe datasets, fashion search, wardrobe cataloguing, and virtual try-on preprocessing.
 
 ## Features
 
-- Per-pixel **human parsing** into 18 fashion-oriented classes using FASHN Human Parser (SegFormer-B4 backbone).
-- Overlay visualization of segmentation + labels for quick inspection.
-- **Color attribute extraction** per clothing piece using:
-  - segmentation mask → garment pixels only
-  - LAB color space + KMeans clustering
-  - HSV-based rules for robust color naming (black/white/gray/brown/orange/etc.)
-- Automatic cropping and saving of:
-  - **tops** (top / dress / scarf-like regions)
-  - **pants/bottoms** (pants, skirts, belts)
-- Clean output folders for:
-  - Cropped garments (`wardrobe/tops`, `wardrobe/pants`)
-  - Labelled visualization images (`labelled_images`).
+- Per-pixel human parsing into 18 fashion-oriented classes using FASHN Human Parser.
+- Labelled segmentation overlays for visual inspection.
+- Dominant color extraction from garment pixels using LAB color space and K-Means clustering.
+- Perceptual color naming with CIE Lab and Delta E 2000, including neutral-color handling.
+- Automatic extraction of transparent PNG cutouts for tops and pants/bottoms.
+- Local metadata storage in `data/wardrobe/metadata.json`.
+- FastAPI endpoints for uploading images, processing garments, and loading wardrobe metadata.
+- Browser UI with search, top/pants tabs, color filters, lazy-loaded garment cards, theme switching, and upload previews.
+- Clean separation between API code, extraction services, static frontend files, and generated runtime data.
 
-## Tech Stack
+## Technology stack
 
-- **Language:** Python 3.10+
-- **Core libraries:**
-  - `fashn-human-parser` – human parsing model + ID→label mappings
-  - `opencv-python` – image IO, resizing, overlay rendering
-  - `numpy` – numerical operations
-  - `scikit-learn` – KMeans clustering for dominant colors
+- **Python 3.10+**
+- **FastAPI** and Uvicorn for the web API.
+- **FASHN Human Parser** for human parsing and label mappings.
+- **OpenCV** for image I/O, resizing, masks, connected components, and overlays.
+- **NumPy** for array operations.
+- **scikit-learn** for K-Means clustering.
+- **colormath** for CIE Lab conversion and Delta E 2000 comparisons.
+- **HTML, CSS, and vanilla JavaScript** for the frontend.
 
-## Folder Structure
-
-A typical project layout:
+## Architecture
 
 ```text
-.
-├── Images/                 # Raw input images (ignored in git)
-├── wardrobe/
-│   ├── tops/               # Cropped top regions (masked)
-│   └── pants/              # Cropped pants/bottom regions (masked)
-├── labelled_images/        # Overlay images with labels + color annotations
-├── env/                    # Virtual environment (ignored in git)
-├── main.py                 # Main script (segmentation + color + wardrobe)
+Browser UI
+   │
+   ├── GET /                         → static/wardrobe-hanger-ui.html
+   ├── POST /api/process             → backend/app.py
+   └── GET /api/wardrobe             → data/wardrobe/metadata.json
+                                      │
+                                      ▼
+                         backend/services/extractor.py
+                                      │
+              FASHN parsing + color analysis + crop saving
+                                      │
+                                      ▼
+                            generated data/ assets
+```
+
+## Directory structure
+
+```text
+AI-Wardrobe/
+├── backend/
+│   ├── __init__.py
+│   ├── app.py                         # FastAPI app and API routes
+│   └── services/
+│       ├── __init__.py
+│       └── extractor.py                # Parsing, colors, crops, metadata
+├── static/
+│   └── wardrobe-hanger-ui.html         # Frontend interface
+├── data/                               # Generated runtime data
+│   ├── uploads/                        # Uploaded source images
+│   ├── labelled_images/                # Segmentation overlay images
+│   └── wardrobe/
+│       ├── tops/                       # Extracted top/dress/scarf PNGs
+│       ├── pants/                      # Extracted pants/skirt/belt PNGs
+│       └── metadata.json                # Saved wardrobe records
+├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 
-Recommended `.gitignore`:
+The `data/` directories are created automatically by `ensure_directories()` when the application starts or processes an image.
 
-```gitignore
-env/
-Images/
-wardrobe/
-labelled_images/
-```
+## Browser paths and storage paths
+
+The backend writes generated files inside `data/`, then exposes them through FastAPI static mounts. Metadata should contain browser-accessible paths, not Windows filesystem paths such as `D:\\...`.
+
+| Asset | Local storage | Browser/API access |
+|---|---|---|
+| Uploaded images | `data/uploads/` | `/Images/<filename>` |
+| Labelled overlays | `data/labelled_images/` | `/labelled_images/<filename>` |
+| Top cutouts | `data/wardrobe/tops/` | `/wardrobe/tops/<filename>` |
+| Pants cutouts | `data/wardrobe/pants/` | `/wardrobe/pants/<filename>` |
+| Metadata | `data/wardrobe/metadata.json` | `/api/wardrobe` |
+
+Keep these two concepts separate: Python uses local `Path` objects for reading and writing; the frontend uses URLs served by FastAPI.
 
 ## Installation
 
-Create and activate a virtual environment (optional but recommended), then install dependencies:
+Create and activate a virtual environment from the project root:
+
+### Windows PowerShell
+
+```powershell
+python -m venv env
+.\env\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If PowerShell blocks activation:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\env\Scripts\Activate.ps1
+```
+
+### macOS/Linux
 
 ```bash
-pip install fashn-human-parser
-pip install opencv-python
-pip install scikit-learn
-pip install numpy
+python3 -m venv env
+source env/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-If you are on a headless server (no GUI), use `opencv-python-headless` instead of `opencv-python`.
+For a headless server, use `opencv-python-headless` instead of `opencv-python` if the dependency set permits it.
 
-## Usage
+## Run the application
 
-1. Place input images in the `Images/` folder.
-2. Set `image_path` in `main.py` to point to an image (or loop over files).
-3. Run:
+Run Uvicorn from the directory containing `backend/`:
 
 ```bash
-python main.py
+uvicorn backend.app:app --reload
 ```
 
-4. Check outputs:
-   - `labelled_images/labelled_<image>.png` – segmentation overlay with `(label + primary color)` text.
-   - `wardrobe/tops/*.png` – cropped, masked tops.
-   - `wardrobe/pants/*.png` – cropped, masked pants.
+Open the application at:
 
-## FASHN Human Parser Details
-
-The project uses the **FASHN Human Parser** model, a SegFormer-B4 vision transformer fine-tuned for human parsing in fashion contexts.
-
-Key properties:
-
-- **Architecture:** SegFormer-B4 encoder + MLP decoder.
-- **Task:** 18-class human parsing focused on fashion and virtual try-on.
-- **I/O:**
-  - Input images in standard formats (file path, PIL, or NumPy array).
-  - Output: integer mask of shape `(H, W)` with class IDs in `[0, 17]`.
-- **Python utilities:**
-  - `FashnHumanParser` class for model inference.
-  - `IDS_TO_LABELS` and `LABELS_TO_IDS` mappings for readable labels.
-  - `IDENTITY_LABELS` list for identity-preserving regions (face, hair, jewelry, etc.).
-
-### Class IDs and Labels
-
-FASHN Human Parser uses the following semantic classes:
-
-| ID | Label      |
-|----|-----------|
-| 0  | background |
-| 1  | face       |
-| 2  | hair       |
-| 3  | top        |
-| 4  | dress      |
-| 5  | skirt      |
-| 6  | pants      |
-| 7  | belt       |
-| 8  | bag        |
-| 9  | hat        |
-| 10 | scarf      |
-| 11 | glasses    |
-| 12 | arms       |
-| 13 | hands      |
-| 14 | legs       |
-| 15 | feet       |
-| 16 | torso      |
-| 17 | jewelry    |
-
-In code, the installed package exposes this mapping as `IDS_TO_LABELS`. The project uses these labels as the single source of truth, rather than hard-coding the strings.
-
-### Category Grouping Used Here
-
-For wardrobe extraction, this project groups classes as follows:
-
-- **Tops / Upper garments**
-  - `top` (ID 3)
-  - `dress` (ID 4) – treated as a one-piece that belongs with tops
-  - `scarf` (ID 10)
-
-- **Bottoms / Pants**
-  - `pants` (ID 6)
-  - `skirt` (ID 5)
-  - `belt` (ID 7)
-
-- **Accessories / Identity regions (not cropped into wardrobe)**
-  - `bag`, `hat`, `glasses`, `jewelry` (IDs 8, 9, 11, 17)
-  - `face`, `hair`, `arms`, `hands`, `legs`, `feet`, `torso` (IDs 1, 2, 12–16)
-
-You can easily adjust these groupings depending on whether you want separate folders for dresses, skirts, accessories, etc.
-
-## Implementation Details
-
-### 1. Human Parsing
-
-The core entry point is:
-
-```python
-parser = FashnHumanParser()
-mask_2d = parser.predict(image_path)   # shape: (H_mask, W_mask)
+```text
+http://127.0.0.1:8000/
 ```
 
-We then ensure the mask matches the image resolution:
+FastAPI documentation is available at:
 
-```python
-original_bgr = cv2.imread(image_path)
-h, w, _ = original_bgr.shape
-
-if mask_2d.shape[:2] != (h, w):
-    mask_2d = cv2.resize(mask_2d, (w, h), interpolation=cv2.INTER_NEAREST)
+```text
+http://127.0.0.1:8000/docs
 ```
 
-For visualization, a random color is assigned to each class and alpha-blended with the original image:
+Because `backend/app.py` uses a relative import such as `from .services.extractor import ...`, keep `backend/__init__.py` and `backend/services/__init__.py` in place and do not run the command from inside `backend/`.
 
-```python
-np.random.seed(42)
-colors = np.random.randint(0, 255, size=(18, 3), dtype=np.uint8)
-colors[0] = [0, 0, 0]  # background
+## API endpoints
 
-colored_mask = colors[mask_2d]
-overlay_result = cv2.addWeighted(original_bgr, 0.6, colored_mask, 0.4, 0)
-```
+### `GET /`
 
-Label text is placed at the centroid of each class mask using spatial moments (`cv2.moments`).
+Serves the frontend from `static/wardrobe-hanger-ui.html`.
 
-### 2. Color Extraction per Garment
+### `GET /api/wardrobe`
 
-For each class ID, we:
+Returns the items stored in `data/wardrobe/metadata.json`:
 
-1. Build a **binary mask** for that class:
-
-   ```python
-   class_mask = (mask_2d == class_id).astype(np.uint8)
-   ```
-
-2. Sample only garment pixels from the original image:
-
-   ```python
-   ys, xs = np.where(class_mask == 1)
-   garment_pixels_bgr = original_bgr[ys, xs]
-   ```
-
-3. Convert to LAB for perceptual clustering:
-
-   ```python
-   garment_pixels_lab = cv2.cvtColor(
-       garment_pixels_bgr.reshape(-1, 1, 3),
-       cv2.COLOR_BGR2LAB
-   ).reshape(-1, 3)
-   ```
-
-4. Filter out extreme highlights/shadows (based on the L channel).
-
-5. Run **KMeans** to find up to 3 dominant clusters:
-
-   ```python
-   kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init=10)
-   labels = kmeans.fit_predict(garment_pixels_lab)
-   centers = kmeans.cluster_centers_
-   ```
-
-6. For each cluster center, convert LAB → BGR → HSV and classify color based on the HSV thresholds:
-
-   - `V < 40` → `black`
-   - `V > 220 and S < 40` → `white`
-   - `S < 40` → `gray`
-   - `10 <= H < 25 and S > 80 and V < 140` → `brown`
-   - `10 <= H < 25 and S > 80 and V >= 140` → `orange`
-   - Other hue bands → `red`, `yellow`, `green`, `blue`, `purple`, `pink`
-   - Remaining near-orange/yellow hues split into `beige`/`brown` by value.
-
-7. The most populous cluster becomes the **primary color** and smaller clusters above a small area threshold become **secondary colors**.
-
-The result is a structure like:
-
-```python
+```json
 {
-    "class_id": 3,
-    "label": "top",
-    "primary_color": "navy",
-    "primary_color_pct": 0.81,
-    "secondary_colors": [
-        {"name": "white", "percentage": 0.19}
-    ],
+  "items": [
+    {
+      "filename": "example_top_1.png",
+      "path": "/wardrobe/tops/example_top_1.png",
+      "kind": "top",
+      "source_image": "/Images/example.jpg",
+      "primarycolor": "blue",
+      "secondarycolors": []
+    }
+  ]
 }
 ```
 
-### 3. Wardrobe Extraction (Tops and Pants)
+### `POST /api/process`
 
-Using the official IDs, we group classes into tops and pants and then:
+Accepts multipart form data:
 
-1. Build a combined mask per group:
+- `file`: JPG, JPEG, PNG, or WEBP image.
+- `save_tops`: boolean flag.
+- `save_pants`: boolean flag.
 
-   ```python
-   combined_mask = np.zeros_like(mask_2d, dtype=np.uint8)
-   for cid in top_class_ids:
-       combined_mask[mask_2d == cid] = 1
-   ```
+Example:
 
-2. Run connected components to split different garments/people:
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/process `
+  -F "file=@Images/example.jpg" `
+  -F "save_tops=true" `
+  -F "save_pants=true"
+```
 
-   ```python
-   num_labels, labels_cc, stats, centroids = cv2.connectedComponentsWithStats(
-       combined_mask, connectivity=8
-   )
-   ```
+The response includes the source image URL, labelled preview URL, number of saved tops and pants, detected pieces, and the updated metadata list.
 
-3. For each component above a pixel-area threshold, crop the bounding box from the original image and apply the local component mask:
+## Processing flow
 
-   ```python
-   crop_bgr = original_bgr[y:y + h_box, x:x + w_box]
-   component_mask = (labels_cc[y:y + h_box, x:x + w_box] == label_id).astype(np.uint8)
-   crop_bgr_masked = cv2.bitwise_and(crop_bgr, crop_bgr, mask=component_mask)
-   ```
+1. The UI creates a multipart request and sends the image to `/api/process`.
+2. `backend/app.py` assigns a UUID-based filename and saves the upload in `data/uploads/`.
+3. `extractor.py` loads the image and runs FASHN human parsing.
+4. The segmentation mask is resized to the source image dimensions if necessary.
+5. Clothing labels are grouped into upper garments and bottoms.
+6. Garment pixels are clustered in LAB space to estimate dominant colors.
+7. Connected components identify crop regions.
+8. Transparent PNG garment cutouts are written to `data/wardrobe/tops/` or `data/wardrobe/pants/`.
+9. A labelled overlay is written to `data/labelled_images/`.
+10. `data/wardrobe/metadata.json` is updated.
+11. The UI reloads the metadata and renders wardrobe cards.
 
-4. Save the masked crop into either `wardrobe/tops/` or `wardrobe/pants/` with a unique filename.
+## FASHN Human Parser details
 
-## Extending the Project
+The parser provides an 18-class semantic mask with class IDs from 0 to 17. The installed package exposes the mapping through `IDS_TO_LABELS`, which the project uses rather than duplicating label strings in the extraction logic.
 
-Ideas for future work:
+| ID | Label |
+|---:|---|
+| 0 | background |
+| 1 | face |
+| 2 | hair |
+| 3 | top |
+| 4 | dress |
+| 5 | skirt |
+| 6 | pants |
+| 7 | belt |
+| 8 | bag |
+| 9 | hat |
+| 10 | scarf |
+| 11 | glasses |
+| 12 | arms |
+| 13 | hands |
+| 14 | legs |
+| 15 | feet |
+| 16 | torso |
+| 17 | jewelry |
 
-- **Fine-grained top classification** (shirt vs T-shirt vs hoodie vs crop top) on masked top crops using a ViT/ConvNeXt or CLIP-style encoder.
-- Additional attributes: sleeve length, neckline, fit, pattern, garment length.
-- Batch processing over entire photo libraries to build a personal wardrobe index.
-- REST API (FastAPI) or UI (Gradio/Streamlit) for interactive upload and exploration.
+### Wardrobe grouping
+
+- **Tops:** `top`, `dress`, `scarf`.
+- **Pants/bottoms:** `pants`, `skirt`, `belt`.
+- **Not cropped:** accessories and identity/body regions such as bags, hats, glasses, jewelry, face, hair, arms, hands, legs, feet, and torso.
+
+These groupings can be changed in `backend/services/extractor.py` if dresses, skirts, or accessories should receive separate folders.
+
+## Color extraction
+
+For each clothing class, the extractor:
+
+1. Builds a binary class mask.
+2. Samples only pixels inside that mask.
+3. Converts the sampled pixels to OpenCV LAB space.
+4. Removes extreme highlights and shadows using the L channel.
+5. Runs K-Means with up to three clusters.
+6. Converts each cluster center to CIE Lab.
+7. Compares it with a fashion-oriented palette using Delta E 2000.
+8. Stores the dominant cluster as `primarycolor` and qualifying smaller clusters as `secondarycolors`.
+
+Example metadata:
+
+```json
+{
+  "class_id": 3,
+  "label": "top",
+  "primarycolor": "navy",
+  "primary_color_pct": 0.81,
+  "secondarycolors": [
+    {"name": "white", "percentage": 0.19}
+  ]
+}
+```
+
+## Troubleshooting
+
+### `ModuleNotFoundError`
+
+From the project root, run:
+
+```bash
+uvicorn backend.app:app --reload
+```
+
+Use relative imports in `backend/app.py`:
+
+```python
+from .services.extractor import process_image
+```
+
+### `NameError: ROOT_DIR is not defined`
+
+Use the current path variables exposed by `extractor.py`, such as `STATIC_DIR`, `DATA_DIR`, and `UPLOADS_DIR`. Do not mix them with old names such as `ROOT_DIR`, `IMAGES_DIR`, or `WARDROBE_DIR` unless those names are explicitly defined.
+
+### Images return 404
+
+Verify that:
+
+1. The physical file exists under `data/`.
+2. The metadata URL matches the FastAPI mount.
+3. The URL uses forward slashes.
+4. The UI is not prepending an extra `/data` segment.
+5. The server has been restarted after changing path logic.
+
+### Source preview is blank
+
+The browser preview should use `URL.createObjectURL(file)`. Keep the object URL alive until the preview image loads, and revoke it only after `img.onload` or when replacing it with another upload.
+
+### No garment cutouts are saved
+
+Check the server logs for detected class labels and verify the `save_tops` and `save_pants` form values. The extractor applies minimum-area thresholds to ignore very small segmentation fragments.
+
+## Extending the project
+
+Potential next steps include:
+
+- Fine-grained classification such as shirt, T-shirt, hoodie, or crop top.
+- Sleeve length, neckline, fit, pattern, and garment-length attributes.
+- Batch processing of an entire image library.
+- Separate folders for dresses, skirts, and accessories.
+- Outfit recommendation and compatibility search.
+- A vector or database-backed wardrobe index.
+- Virtual try-on preprocessing and downstream generation.
+
+## Git recommendations
+
+Generated images and model artifacts can be large. A suitable `.gitignore` can include:
+
+```gitignore
+__pycache__/
+*.py[cod]
+.env
+.venv/
+env/
+
+# Runtime data
+data/uploads/*
+data/labelled_images/*
+data/wardrobe/tops/*
+data/wardrobe/pants/*
+
+# Keep metadata if desired
+data/wardrobe/metadata.json
+```
+
+If the repository includes demo images, keep a small curated set in an `examples/` directory rather than committing every runtime upload.
 
 ## License
 
-This repo is a project wrapper around the FASHN Human Parser package and model. See the upstream FASHN Human Parser repository and model card for licensing and usage terms of the underlying model and weights.
+This repository is a project wrapper around the FASHN Human Parser package and model. Follow the licensing and usage terms of the upstream FASHN Human Parser repository and model weights. Add a project-specific license file if you intend to distribute this application.
