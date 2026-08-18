@@ -7,7 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from main import IMAGES_DIR, ROOT_DIR, WARDROBE_DIR, ensure_directories, load_metadata, process_image
+from .services.extractor import (
+    PROJECT_ROOT,
+    STATIC_DIR,
+    DATA_DIR,
+    UPLOADS_DIR,
+    ensure_directories,
+    load_metadata,
+    process_image,
+)
 
 app = FastAPI(title="AI Wardrobe API")
 app.add_middleware(
@@ -19,23 +27,20 @@ app.add_middleware(
 )
 
 ensure_directories()
-app.mount("/wardrobe", StaticFiles(directory=str(WARDROBE_DIR)), name="wardrobe")
-app.mount("/labelled_images", StaticFiles(directory=str(ROOT_DIR / "labelled_images")), name="labelled_images")
-app.mount("/Images", StaticFiles(directory=str(IMAGES_DIR)), name="Images")
-
+app.mount("/wardrobe", StaticFiles(directory=str(DATA_DIR / "wardrobe")), name="wardrobe")
+app.mount("/labelled_images", StaticFiles(directory=str(DATA_DIR / "labelled_images")), name="labelled_images")
+app.mount("/Images", StaticFiles(directory=str(UPLOADS_DIR)), name="Images")
 
 @app.get("/")
 def home():
-    ui_path = ROOT_DIR / "wardrobe-hanger-ui.html"
+    ui_path = STATIC_DIR / "wardrobe-hanger-ui.html"
     if ui_path.exists():
         return FileResponse(ui_path)
     return JSONResponse({"message": "Upload UI file not found."}, status_code=404)
 
-
 @app.get("/api/wardrobe")
 def get_wardrobe():
     return {"items": load_metadata()}
-
 
 @app.post("/api/process")
 async def upload_and_process(
@@ -51,12 +56,11 @@ async def upload_and_process(
         raise HTTPException(status_code=400, detail="Unsupported file type. Use JPG, PNG, or WEBP.")
 
     unique_name = f"{uuid.uuid4().hex}_{Path(file.filename).name}"
-    destination = IMAGES_DIR / unique_name
+    destination = UPLOADS_DIR / unique_name
     with destination.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        result = process_image(str(destination), save_tops=save_tops, save_pants=save_pants)
-        return result
+        return process_image(str(destination), save_tops=save_tops, save_pants=save_pants)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

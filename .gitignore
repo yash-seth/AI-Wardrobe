@@ -1,5 +1,3 @@
 env/
-Images/
-wardrobe/
-labelled_images/
+data/
 __pycache__/
